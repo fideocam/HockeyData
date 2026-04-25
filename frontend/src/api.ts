@@ -66,6 +66,12 @@ export interface SankeyNodeMeta {
   level_id?: string;
   level_name?: string;
   team_id?: string;
+  players?: SankeyNodePlayer[];
+}
+
+export interface SankeyNodePlayer {
+  id: string;
+  name: string;
 }
 
 export interface RetentionOrg {
@@ -125,9 +131,11 @@ export const api = {
     level: string,
     weight: "players" | "games" = "players",
     teamId?: string,
+    cohort?: SankeyNodePlayer[],
   ) => {
     const q = new URLSearchParams({ team, season, level, weight });
     if (teamId?.trim()) q.set("team_id", teamId.trim());
+    if (cohort?.length) q.set("cohort", JSON.stringify(cohort));
     return get<SankeyResponse>(`/api/sankey/to-current?${q}`);
   },
 
@@ -137,9 +145,11 @@ export const api = {
     level: string,
     weight: "players" | "games" = "players",
     teamId?: string,
+    cohort?: SankeyNodePlayer[],
   ) => {
     const q = new URLSearchParams({ team, season, level, weight });
     if (teamId?.trim()) q.set("team_id", teamId.trim());
+    if (cohort?.length) q.set("cohort", JSON.stringify(cohort));
     return get<SankeyResponse>(`/api/sankey/from-previous?${q}`);
   },
 
@@ -155,6 +165,7 @@ export const api = {
     direction: "to_current" | "from_previous",
     maxSeasonsBack = 10,
     teamId?: string,
+    cohort?: SankeyNodePlayer[],
   ) => {
     const q = new URLSearchParams({
       team,
@@ -164,6 +175,7 @@ export const api = {
       max_seasons_back: String(maxSeasonsBack),
     });
     if (teamId?.trim()) q.set("team_id", teamId.trim());
+    if (cohort?.length) q.set("cohort", JSON.stringify(cohort));
     return get<SankeyResponse>(`/api/sankey/career-paths?${q}`);
   },
 };

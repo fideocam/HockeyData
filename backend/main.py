@@ -3,6 +3,7 @@ HockeyData API — FastAPI backend for Finnish hockey Sankey diagrams.
 """
 
 import asyncio
+import json
 from dataclasses import asdict
 from typing import Optional
 
@@ -317,6 +318,7 @@ async def _sankey_player_context(
     client: httpx.AsyncClient,
     team: str,
     team_id: str,
+    traversal_cohort: str,
     level: str,
     season: str,
     max_players: int,
@@ -327,6 +329,34 @@ async def _sankey_player_context(
     When *team_id* is set, loads the official joukkuekortti roster (exact team),
     bypassing the text search which often omits lower-level teams.
     """
+    if traversal_cohort.strip():
+        try:
+            parsed = json.loads(traversal_cohort)
+            cohort_rows = [x for x in parsed if isinstance(x, dict) and x.get("id")] if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            cohort_rows = [{"id": x.strip(), "name": ""} for x in traversal_cohort.split(",") if x.strip()]
+        if not cohort_rows:
+            raise HTTPException(422, "Could not parse traversal cohort.")
+
+        players: list[dict] = []
+        for row in cohort_rows[:max_players]:
+            lid = str(row.get("id", "")).strip()
+            if not lid:
+                continue
+            players.append({
+                "PersonID": lid,
+                "LinkID": lid,
+                "LastName": str(row.get("name", "")).strip(),
+                "FirstName": "",
+                "Association": team.strip(),
+                "Position": "",
+            })
+        if not players:
+            raise HTTPException(404, "Traversal cohort contains no valid player identifiers.")
+        careers = await _careers_for_players(client, players)
+        cohort = frozenset(p["LinkID"] for p in players)
+        return players, careers, team.strip(), level, cohort, None
+
     tid_raw = team_id.strip()
     tid = ""
     if tid_raw:
@@ -456,6 +486,7 @@ async def _fetch_game_weights(
 async def api_sankey_to_current(
     team: str = Query("", description="Team abbreviation / search string"),
     team_id: str = Query("", description="Joukkuekortti ?teamid=… (exact roster)"),
+    cohort: str = Query("", description="JSON traversal cohort from a clicked graph node"),
     season: str = Query("2026"),
     level: str = Query("0"),
     weight: str = Query("players", description="'players' or 'games'"),
@@ -463,7 +494,7 @@ async def api_sankey_to_current(
 ):
     client = get_client()
     players, careers, team_abbr, lvl, cohort, meta = await _sankey_player_context(
-        client, team, team_id, level, season, max_players,
+        client, team, team_id, cohort, level, season, max_players,
     )
     sankey = build_to_current_sankey(
         players, careers, team_abbr, season, lvl, cohort_link_ids=cohort,
@@ -484,6 +515,7 @@ async def api_sankey_to_current(
 async def api_sankey_from_previous(
     team: str = Query(""),
     team_id: str = Query(""),
+    cohort: str = Query("", description="JSON traversal cohort from a clicked graph node"),
     season: str = Query(...),
     level: str = Query("0"),
     weight: str = Query("players", description="'players' or 'games'"),
@@ -491,7 +523,7 @@ async def api_sankey_from_previous(
 ):
     client = get_client()
     players, careers, team_abbr, lvl, cohort, meta = await _sankey_player_context(
-        client, team, team_id, level, season, max_players,
+        client, team, team_id, cohort, level, season, max_players,
     )
     sankey = build_from_previous_sankey(
         players, careers, team_abbr, season, lvl, cohort_link_ids=cohort,
@@ -512,6 +544,7 @@ async def api_sankey_from_previous(
 async def api_sankey_career_paths(
     team: str = Query("", description="Team abbreviation, e.g. 'HIFK'"),
     team_id: str = Query("", description="Joukkuekortti ?teamid=…"),
+    cohort: str = Query("", description="JSON traversal cohort from a clicked graph node"),
     season: str = Query("2026", description="Focal season year, e.g. '2026'"),
     level: str = Query("0", description="Level ID to confirm players; '0' = any"),
     direction: str = Query("to_current", description="'to_current' or 'from_previous'"),
@@ -524,7 +557,7 @@ async def api_sankey_career_paths(
     """
     client = get_client()
     players, careers, team_abbr, lvl, cohort, meta = await _sankey_player_context(
-        client, team, team_id, level, season, max_players,
+        client, team, team_id, cohort, level, season, max_players,
     )
     sankey = build_career_paths_sankey(
         players, careers, team_abbr, focal_season=season,

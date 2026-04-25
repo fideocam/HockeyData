@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "./api";
-import type { Level, SankeyNodeMeta, SankeyResponse } from "./api";
+import type { Level, SankeyNodeMeta, SankeyNodePlayer, SankeyResponse } from "./api";
 import SankeyChart from "./SankeyChart";
 import TeamSearch from "./TeamSearch";
 import LevelPicker from "./LevelPicker";
@@ -11,7 +11,14 @@ type AppTab = "flows" | "retention";
 
 type Mode = "to_current" | "from_previous" | "career_to_current" | "career_from_previous";
 type Weight = "players" | "games";
-type GraphTraversalPick = { label: string; team: string; season: string; levelId: string; levelName?: string };
+type GraphTraversalPick = {
+  label: string;
+  team: string;
+  season: string;
+  levelId: string;
+  levelName?: string;
+  players?: SankeyNodePlayer[];
+};
 
 const SEASONS = Array.from({ length: 21 }, (_, i) => {
   const end = 2026 - i;
@@ -167,14 +174,15 @@ export default function App() {
       const t = team.trim();
       const pasted = extractTeamIdFromPaste(teamIdOrUrl)?.trim();
       const tid = pasted || (joukkueTeamIdFromPick.trim() || undefined);
+      const traversalCohort = traversalPick?.players?.length ? traversalPick.players : undefined;
       let data: SankeyResponse;
       if (mode === "to_current") {
-        data = await api.sankeyToCurrent(t, season, levelId, weight, tid);
+        data = await api.sankeyToCurrent(t, season, levelId, weight, tid, traversalCohort);
       } else if (mode === "from_previous") {
-        data = await api.sankeyFromPrevious(t, season, levelId, weight, tid);
+        data = await api.sankeyFromPrevious(t, season, levelId, weight, tid, traversalCohort);
       } else {
         const dir = mode === "career_to_current" ? "to_current" : "from_previous";
-        data = await api.sankeyCareerPaths(t, season, levelId, dir, 10, tid);
+        data = await api.sankeyCareerPaths(t, season, levelId, dir, 10, tid, traversalCohort);
       }
       setResult(data);
       setResultKey((k) => k + 1);
@@ -189,7 +197,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [team, teamIdOrUrl, joukkueTeamIdFromPick, season, levelId, mode, weight, canSubmit]);
+  }, [team, teamIdOrUrl, joukkueTeamIdFromPick, traversalPick, season, levelId, mode, weight, canSubmit]);
 
   const selectGraphNode = useCallback((label: string, meta?: SankeyNodeMeta) => {
     const fallback = parseCareerNodeLabel(label);
@@ -202,6 +210,7 @@ export default function App() {
           season: seasonFromMeta,
           levelId: meta?.level_id?.trim() || "0",
           levelName: meta?.level_name?.trim() || undefined,
+          players: meta?.players ?? [],
         }
       : fallback;
     if (!pick) return;
@@ -482,6 +491,7 @@ export default function App() {
                     <strong>{traversalPick.team}</strong>
                     <span>{SEASONS.find((s) => s.value === traversalPick.season)?.label ?? traversalPick.season}</span>
                     {traversalPick.levelName && <span>{traversalPick.levelName}</span>}
+                    {traversalPick.players?.length ? <span>{traversalPick.players.length} players</span> : null}
                   </div>
                   <button className="btn-primary" onClick={submit} disabled={!canSubmit}>
                     {loading ? <><span className="btn-spinner" /> Building…</> : "Build graph from this node"}

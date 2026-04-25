@@ -339,6 +339,7 @@ def build_career_paths_sankey(
     # player_id → {name, path: [(season_num_str, team_abbr, level_id)]}
     player_data: dict[str, dict] = {}
     node_metadata_by_key: dict[tuple[str, str, str], dict] = {}
+    node_players_by_key: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     confirmed = 0
 
     for p in players:
@@ -376,9 +377,12 @@ def build_career_paths_sankey(
         )
 
         if path:
+            pid = p.get("PersonID", link_id)
+            player_name = f"{p.get('LastName', '')} {p.get('FirstName', '')}".strip()
             for s, team_abbr, level_id in path:
                 meta = season_team.get(s, {})
-                node_metadata_by_key[(s, team_abbr, level_id)] = {
+                key = (s, team_abbr, level_id)
+                node_metadata_by_key[key] = {
                     "season": s,
                     "season_label": _season_label(s),
                     "team": team_abbr,
@@ -386,9 +390,9 @@ def build_career_paths_sankey(
                     "level_name": meta.get("level_name", ""),
                     "team_id": meta.get("team_id", ""),
                 }
-            pid = p.get("PersonID", link_id)
+                node_players_by_key[key].append({"id": pid, "name": player_name})
             player_data[pid] = {
-                "name": f"{p.get('LastName', '')} {p.get('FirstName', '')}".strip(),
+                "name": player_name,
                 "path": path,
             }
 
@@ -413,7 +417,10 @@ def build_career_paths_sankey(
     sorted_nodes = sorted(node_set, key=lambda x: (int(x[0]) if x[0].isdigit() else 0, x[1], x[2]))
     node_labels = [f"{_season_label(s)} · {t}" for s, t, _ in sorted_nodes]
     node_to_idx = {(s, t, level_id): i for i, (s, t, level_id) in enumerate(sorted_nodes)}
-    node_meta = [node_metadata_by_key.get(key, {}) for key in sorted_nodes]
+    node_meta = [
+        {**node_metadata_by_key.get(key, {}), "players": node_players_by_key.get(key, [])}
+        for key in sorted_nodes
+    ]
 
     # ── X positions: one column per season ──
     n_seasons = len(all_seasons_sorted)
