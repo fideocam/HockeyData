@@ -623,6 +623,36 @@ select { cursor: pointer; }
   padding: 16px;
   overflow: hidden;
 }
+.sankey-chart-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sankey-chart-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sankey-chart-note {
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.sankey-chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.sankey-chart-viewport {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+}
+.sankey-chart-plot {
+  width: 100%;
+  height: 100%;
+}
 .chart-placeholder {
   height: 200px;
   display: flex;

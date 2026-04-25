@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SankeyResponse } from "./api";
+import type { Data, Layout } from "plotly.js";
 
-let Plotly: typeof import("plotly.js-dist-min") | null = null;
+type PlotlyStatic = typeof import("plotly.js");
+
+let Plotly: PlotlyStatic | null = null;
 import("plotly.js-dist-min").then((m) => {
-  Plotly = m.default as typeof import("plotly.js-dist-min");
+  Plotly = m.default as unknown as PlotlyStatic;
 });
 
 interface Props {
@@ -15,11 +18,14 @@ const ACCENT = "#1a5fa8";
 const NODE_DEFAULT = "#4a90d9";
 const NODE_UNKNOWN = "#9ca3af";
 const LINK_ALPHA = 0.38;
+const EXPORT_SIZE = 1200;
 
 const NEUTRAL_LABELS = new Set([
   "Unknown / first team", "Unknown", "Left hockey",
   "Stayed / left game", "Still at team / left game",
 ]);
+
+type ExportFormat = "svg" | "png";
 
 function rgba(hex: string, a: number) {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -31,8 +37,11 @@ function rgba(hex: string, a: number) {
 const isCareerMode = (mode: string) => mode.startsWith("career_");
 
 export default function SankeyChart({ data, weight = "players" }: Props) {
-  const ref = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const plotRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(!!Plotly);
+  const [plotSize, setPlotSize] = useState(640);
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
 
   useEffect(() => {
     if (Plotly) return;
@@ -41,7 +50,18 @@ export default function SankeyChart({ data, weight = "players" }: Props) {
   }, []);
 
   useEffect(() => {
-    if (!ref.current || !ready || !Plotly) return;
+    const el = viewportRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      if (width > 0) setPlotSize(Math.max(320, width));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!plotRef.current || !ready || !Plotly) return;
     const { nodes, links, focal_team, node_x, node_y, mode } = data;
 
     const career = isCareerMode(mode);
@@ -71,7 +91,7 @@ export default function SankeyChart({ data, weight = "players" }: Props) {
       nodeConfig.y = node_y;
     }
 
-    const trace: Plotly.Data = {
+    const trace: Data = {
       type: "sankey",
       orientation: "h",
       arrangement: hasPositions ? "fixed" : "snap",
@@ -87,29 +107,65 @@ export default function SankeyChart({ data, weight = "players" }: Props) {
       } as any,
     };
 
-    // Height: more nodes need more space; career mode is wider
-    const height = career
-      ? Math.max(560, nodes.length * 22 + 80)
-      : Math.max(520, nodes.length * 28 + 80);
-
-    const layout: Partial<Plotly.Layout> = {
+    const layout: Partial<Layout> = {
       font: { family: "system-ui, sans-serif", size: career ? 11 : 13, color: "#111827" },
       paper_bgcolor: "transparent",
       plot_bgcolor: "transparent",
       margin: { l: 16, r: 16, t: career ? 30 : 16, b: 16 },
-      height,
+      width: plotSize,
+      height: plotSize,
     };
 
     // Always purge first so switching teams never carries over stale node positions
-    Plotly!.purge(ref.current);
-    Plotly!.newPlot(ref.current, [trace], layout, {
+    Plotly!.purge(plotRef.current);
+    Plotly!.newPlot(plotRef.current, [trace], layout, {
       displayModeBar: false,
-      responsive: true,
+      responsive: false,
     });
 
-    return () => { if (ref.current && Plotly) Plotly!.purge(ref.current); };
-  }, [data, ready]);
+    return () => { if (plotRef.current && Plotly) Plotly!.purge(plotRef.current); };
+  }, [data, plotSize, ready, weight]);
+
+  const downloadImage = useCallback(async (format: ExportFormat) => {
+    if (!plotRef.current || !Plotly) return;
+    setExporting(format);
+    try {
+      const url = await (Plotly as any).toImage(plotRef.current, {
+        format,
+        width: EXPORT_SIZE,
+        height: EXPORT_SIZE,
+      });
+      const safeName = [data.focal_team, data.mode, "sankey"]
+        .join("-")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${safeName}.${format}`;
+      a.click();
+    } finally {
+      setExporting(null);
+    }
+  }, [data.focal_team, data.mode]);
 
   if (!ready) return <div className="chart-placeholder">Loading chart…</div>;
-  return <div ref={ref} style={{ width: "100%", minHeight: 520 }} />;
+  return (
+    <div className="sankey-chart-shell">
+      <div className="sankey-chart-toolbar">
+        <span className="sankey-chart-note">Square image export</span>
+        <div className="sankey-chart-actions">
+          <button className="btn-ghost" onClick={() => downloadImage("svg")} disabled={!!exporting}>
+            {exporting === "svg" ? "Preparing…" : "Download SVG"}
+          </button>
+          <button className="btn-ghost" onClick={() => downloadImage("png")} disabled={!!exporting}>
+            {exporting === "png" ? "Preparing…" : "Download PNG"}
+          </button>
+        </div>
+      </div>
+      <div className="sankey-chart-viewport" ref={viewportRef}>
+        <div className="sankey-chart-plot" ref={plotRef} />
+      </div>
+    </div>
+  );
 }

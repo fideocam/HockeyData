@@ -206,6 +206,41 @@ async def get_team_season_roster(
 _ASSOC_CODE_RE = re.compile(r"^[A-Za-zÅÄÖåäö]{2,4}$")
 
 
+def _team_search_variants(query: str) -> list[str]:
+    """
+    Leijonat team search is literal about hyphens and suffixes. Generate a small
+    set of common alternate forms without turning search into a broad fuzzy match.
+    """
+    variants: list[str] = []
+
+    def add(value: str) -> None:
+        v = re.sub(r"\s+", " ", value).strip()
+        if v and v not in variants:
+            variants.append(v)
+
+    add(query)
+
+    without_akatemia = re.sub(r"\bakatemia\b", "", query, flags=re.IGNORECASE)
+    add(without_akatemia)
+
+    base = re.sub(r"\s+", " ", without_akatemia).strip()
+    parts = base.split(" ")
+    if len(parts) >= 2:
+        # "Karhu Kissat" is not returned by the source, but "Karhu-Kissat" is.
+        add(f"{parts[0]}-{parts[1]}")
+        add(" ".join([f"{parts[0]}-{parts[1]}", *parts[2:]]))
+        # "K Kissat" is a natural way to type the displayed "K-Kissat" abbreviation.
+        if len(parts[0]) == 1:
+            add(parts[1])
+
+    # Users often type the displayed abbreviation ("K-Kissat"), while the source
+    # only finds this club with the full name or the suffix ("Kissat").
+    if "-" in query:
+        add(query.split("-")[-1])
+
+    return variants
+
+
 def _is_team_search_row(item: Any) -> bool:
     """Drop non-team JSON (e.g. stray player objects) from search responses."""
     if not isinstance(item, dict):
@@ -250,12 +285,13 @@ async def search_teams(client: httpx.AsyncClient, name: str) -> list[dict]:
     if not q:
         return []
 
-    primary = await _search_teams_request(client, q, "")
     merged: dict[str, dict] = {}
-    for row in primary:
-        tid = str(row.get("TeamID", ""))
-        if tid:
-            merged[tid] = row
+    for candidate in _team_search_variants(q):
+        rows = await _search_teams_request(client, candidate, "")
+        for row in rows:
+            tid = str(row.get("TeamID", ""))
+            if tid:
+                merged[tid] = row
 
     if _ASSOC_CODE_RE.match(q) and q[0].isalpha():
         initial = q[0].upper()

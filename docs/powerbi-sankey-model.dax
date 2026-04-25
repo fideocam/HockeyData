@@ -1,0 +1,160 @@
+/*
+Power BI Sankey model for HockeyData
+====================================
+
+Use this after importing one HockeyData Sankey API response into Power BI.
+
+The built-in/custom Power BI Sankey visuals usually need a flat edge table:
+  Source | Destination | Weight
+
+HockeyData returns Plotly-style JSON:
+  nodes = ["Team A", "Team B", ...]
+  links = [{ source: 0, target: 1, value: 3, label: "...", players: [...] }]
+
+Recommended import shape
+------------------------
+Create these source tables in Power Query from the API JSON:
+
+1. SankeyNodesRaw
+   - NodeIndex  whole number, zero-based index from the nodes array
+   - NodeName   text, node label from the nodes array
+   - NodeX      decimal, optional from node_x
+   - NodeY      decimal, optional from node_y
+
+2. SankeyLinksRaw
+   - LinkIndex    whole number, zero-based row index
+   - SourceIndex  whole number, from links[source]
+   - TargetIndex  whole number, from links[target]
+   - Weight       whole number/decimal, from links[value]
+   - LinkLabel    text, from links[label]
+
+3. SankeyLinkPlayersRaw, optional
+   - LinkIndex  whole number, matching SankeyLinksRaw[LinkIndex]
+   - PlayerName text, one row per player from links[players]
+
+Then create the calculated tables and measures below.
+*/
+
+// Main table for Power BI Sankey visual fields:
+// Source      -> Source
+// Destination -> Destination
+// Weight      -> Weight
+// Tooltip     -> LinkLabel, PlayerTooltip, PlayerCount
+SankeyEdges =
+VAR Edges =
+    ADDCOLUMNS (
+        SankeyLinksRaw,
+        "Source",
+            LOOKUPVALUE (
+                SankeyNodesRaw[NodeName],
+                SankeyNodesRaw[NodeIndex], SankeyLinksRaw[SourceIndex]
+            ),
+        "Destination",
+            LOOKUPVALUE (
+                SankeyNodesRaw[NodeName],
+                SankeyNodesRaw[NodeIndex], SankeyLinksRaw[TargetIndex]
+            ),
+        "PlayerCount",
+            CALCULATE (
+                COUNTROWS ( SankeyLinkPlayersRaw ),
+                SankeyLinkPlayersRaw[LinkIndex] = SankeyLinksRaw[LinkIndex]
+            ),
+        "PlayerTooltip",
+            CALCULATE (
+                CONCATENATEX (
+                    SankeyLinkPlayersRaw,
+                    SankeyLinkPlayersRaw[PlayerName],
+                    UNICHAR ( 10 ),
+                    SankeyLinkPlayersRaw[PlayerName],
+                    ASC
+                ),
+                SankeyLinkPlayersRaw[LinkIndex] = SankeyLinksRaw[LinkIndex]
+            )
+    )
+RETURN
+    SELECTCOLUMNS (
+        FILTER ( Edges, NOT ISBLANK ( [Source] ) && NOT ISBLANK ( [Destination] ) ),
+        "LinkIndex", SankeyLinksRaw[LinkIndex],
+        "Source", [Source],
+        "Destination", [Destination],
+        "Weight", SankeyLinksRaw[Weight],
+        "LinkLabel", SankeyLinksRaw[LinkLabel],
+        "PlayerCount", [PlayerCount],
+        "PlayerTooltip", [PlayerTooltip]
+    )
+
+
+// Optional helper table for ordering, coloring, and debugging nodes.
+// Some custom Sankey visuals let you bind node/category metadata separately.
+SankeyNodes =
+SELECTCOLUMNS (
+    SankeyNodesRaw,
+    "NodeIndex", SankeyNodesRaw[NodeIndex],
+    "NodeName", SankeyNodesRaw[NodeName],
+    "SeasonLabel",
+        VAR LabelText = SankeyNodesRaw[NodeName]
+        VAR SeparatorPos = SEARCH ( " · ", LabelText, 1, 0 )
+        RETURN IF ( SeparatorPos > 0, LEFT ( LabelText, SeparatorPos - 1 ), BLANK () ),
+    "TeamName",
+        VAR LabelText = SankeyNodesRaw[NodeName]
+        VAR SeparatorPos = SEARCH ( " · ", LabelText, 1, 0 )
+        RETURN IF ( SeparatorPos > 0, MID ( LabelText, SeparatorPos + 3, LEN ( LabelText ) ), LabelText ),
+    "NodeX", SankeyNodesRaw[NodeX],
+    "NodeY", SankeyNodesRaw[NodeY]
+)
+
+
+// Use this if your visual expects a measure instead of a raw Weight column.
+Sankey Weight =
+SUM ( SankeyEdges[Weight] )
+
+
+// Useful card/QA measures.
+Sankey Total Players Or Games =
+SUM ( SankeyEdges[Weight] )
+
+Sankey Link Count =
+COUNTROWS ( SankeyEdges )
+
+Sankey Distinct Source Nodes =
+DISTINCTCOUNT ( SankeyEdges[Source] )
+
+Sankey Distinct Destination Nodes =
+DISTINCTCOUNT ( SankeyEdges[Destination] )
+
+
+/*
+Alternative for one-step modes if you import the API "flows" array instead
+=========================================================================
+
+For /api/sankey/to-current and /api/sankey/from-previous, the response also
+contains flows:
+  person_id, first_name, last_name, source_team, source_season,
+  target_team, target_season, position
+
+If you import that as SankeyFlowsRaw, this calculated table can build the same
+flat Sankey table without using nodes/links. Do not use it for career modes,
+because career mode currently returns an empty flows array.
+*/
+
+SankeyEdgesFromFlows =
+VAR FlowRows =
+    ADDCOLUMNS (
+        SankeyFlowsRaw,
+        "PlayerName",
+            TRIM (
+                SankeyFlowsRaw[last_name]
+                    & " "
+                    & SankeyFlowsRaw[first_name]
+                    & IF ( NOT ISBLANK ( SankeyFlowsRaw[position] ), " (" & SankeyFlowsRaw[position] & ")", "" )
+            )
+    )
+RETURN
+    GROUPBY (
+        FlowRows,
+        SankeyFlowsRaw[source_team],
+        SankeyFlowsRaw[target_team],
+        "Weight", COUNTX ( CURRENTGROUP (), SankeyFlowsRaw[person_id] ),
+        "PlayerTooltip", CONCATENATEX ( CURRENTGROUP (), [PlayerName], UNICHAR ( 10 ), [PlayerName], ASC )
+    )
+

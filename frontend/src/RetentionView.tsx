@@ -3,9 +3,11 @@ import { api } from "./api";
 import type { Level, RetentionResponse, RetentionOrg } from "./api";
 import LevelPicker from "./LevelPicker";
 
-let Plotly: typeof import("plotly.js-dist-min") | null = null;
+type PlotlyStatic = typeof import("plotly.js");
+
+let Plotly: PlotlyStatic | null = null;
 import("plotly.js-dist-min").then((m) => {
-  Plotly = m.default as typeof import("plotly.js-dist-min");
+  Plotly = m.default as unknown as PlotlyStatic;
 });
 
 const SEASON_YEARS = Array.from({ length: 20 }, (_, i) => {
