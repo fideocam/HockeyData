@@ -130,6 +130,59 @@ LEVELS = [
 ]
 
 
+YOUTH_OLD_LEVEL_NAMES = {
+    "77": "A-nuorten SM-liiga",
+    "78": "A-nuorten Mestis",
+    "79": "A-nuorten Suomi-sarja",
+    "154": "A-nuorten II-divisioona",
+    "81": "B-nuorten SM-sarja",
+    "82": "B-nuorten Mestis",
+    "83": "B-nuorten Suomi-sarja",
+    "84": "B-nuorten II-divisioona",
+    "151": "B-nuorten III-divisioona",
+    "88": "C-nuorten SM-sarja",
+    "89": "C-nuorten Mestis",
+    "90": "C-nuorten Suomi-sarja",
+    "152": "C-nuorten II-divisioona",
+    "93": "D1-juniorit / U15",
+    "94": "D1-juniorit alempi / U15",
+    "95": "D1-juniorit harraste / U15",
+    "97": "D2-juniorit / U14",
+    "98": "D2-juniorit alempi / U14",
+    "99": "D2-juniorit harraste / U14",
+    "101": "E1-juniorit / U13",
+    "102": "E1-juniorit alempi / U13",
+    "145": "E2-juniorit / U12",
+    "146": "F1-juniorit / U11",
+}
+
+
+def _levels_for_season(season: Optional[str]) -> list[dict]:
+    """
+    Leijonat renamed many junior levels from A/B/C/D/E junior naming to U-age
+    naming. Level IDs remain the useful API filter, but labels should match the
+    season the user is exploring.
+    """
+    try:
+        season_year = int(season or "0")
+    except ValueError:
+        season_year = 0
+
+    use_old_youth_names = season_year and season_year <= 2020
+    use_naisten_liiga = season_year and season_year <= 2024
+
+    out = []
+    for level in LEVELS:
+        item = dict(level)
+        lid = str(item["id"])
+        if use_old_youth_names and lid in YOUTH_OLD_LEVEL_NAMES:
+            item["name"] = YOUTH_OLD_LEVEL_NAMES[lid]
+        if use_naisten_liiga and lid == "73":
+            item["name"] = "Naisten Liiga"
+        out.append(item)
+    return out
+
+
 @app.on_event("startup")
 async def startup():
     global _client
@@ -149,8 +202,8 @@ def get_client() -> httpx.AsyncClient:
 
 
 @app.get("/api/levels")
-async def api_levels():
-    return LEVELS
+async def api_levels(season: str = Query("", description="Season end year, e.g. 2025")):
+    return _levels_for_season(season)
 
 
 @app.get("/api/search-teams")
@@ -351,6 +404,7 @@ def _sankey_response(sankey) -> dict:
         "searched_count": d["total_searched"],
         "node_x": d["node_x"],
         "node_y": d["node_y"],
+        "node_meta": d["node_meta"],
         "flows": [asdict(f) for f in sankey.player_flows],
     }
     if sankey.focal_team_display:

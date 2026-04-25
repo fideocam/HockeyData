@@ -536,6 +536,32 @@ select { cursor: pointer; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.selected-team-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-sm);
+  background: var(--accent-light);
+}
+.selected-team-label {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  text-transform: uppercase;
+}
+.selected-team-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.selected-team-abbr {
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 /* ── Error ── */
 .error-banner {
@@ -622,6 +648,32 @@ select { cursor: pointer; }
   border-radius: var(--radius);
   padding: 16px;
   overflow: hidden;
+}
+.traversal-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-sm);
+  background: #ecfdf5;
+}
+.traversal-card > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.traversal-label {
+  color: #047857;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .4px;
+  text-transform: uppercase;
 }
 .sankey-chart-shell {
   display: flex;

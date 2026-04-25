@@ -39,6 +39,7 @@ class SankeyData:
     total_searched: int
     node_x: list[float] = field(default_factory=list)
     node_y: list[float] = field(default_factory=list)
+    node_meta: list[dict] = field(default_factory=list)
     focal_team_display: Optional[str] = None  # full official name when resolved via team_id
     resolved_team_id: Optional[str] = None
     resolved_level_id: Optional[str] = None
@@ -62,13 +63,13 @@ def _seasons_map(career: dict) -> dict[str, list[dict]]:
     return seasons
 
 
-def _primary_team_per_season(career: dict) -> dict[str, str]:
+def _primary_team_per_season(career: dict) -> dict[str, dict]:
     """
     For each season in the career, pick the team the player spent time with
     at the most competitive level (lowest LevelWebOrder).
-    Returns {season_number: team_abbr}.
+    Returns {season_number: {team, level_id, level_name, team_id}}.
     """
-    result: dict[str, tuple[int, str]] = {}  # {season: (best_web_order, team_abbr)}
+    result: dict[str, tuple[int, dict]] = {}  # {season: (best_web_order, metadata)}
     for e in _all_entries(career):
         if e.get("LevelID") in PRACTICE_LEVEL_IDS:
             continue
@@ -84,8 +85,13 @@ def _primary_team_per_season(career: dict) -> dict[str, str]:
             if not abbr:
                 continue
             if s not in result or web_order < result[s][0]:
-                result[s] = (web_order, abbr)
-    return {s: abbr for s, (_, abbr) in result.items()}
+                result[s] = (web_order, {
+                    "team": abbr,
+                    "level_id": str(e.get("LevelID", "") or ""),
+                    "level_name": e.get("LevelName", "") or "",
+                    "team_id": str(t.get("TeamID", "") or ""),
+                })
+    return {s: meta for s, (_, meta) in result.items()}
 
 
 def _season_label(season_number: str) -> str:
@@ -330,8 +336,9 @@ def build_career_paths_sankey(
     direction="to_current"    → show career UP TO focal_season (past → present)
     direction="from_previous" → show career FROM focal_season onward (present → future)
     """
-    # player_id → {name, path: [(season_num_str, team_abbr)]}
+    # player_id → {name, path: [(season_num_str, team_abbr, level_id)]}
     player_data: dict[str, dict] = {}
+    node_metadata_by_key: dict[tuple[str, str, str], dict] = {}
     confirmed = 0
 
     for p in players:
@@ -360,11 +367,25 @@ def build_career_paths_sankey(
             limit_s = [s for s in season_team if s.isdigit() and int(s) >= focal_yr]
 
         path = sorted(
-            [(s, season_team[s]) for s in limit_s],
+            [
+                (s, season_team[s]["team"], season_team[s].get("level_id", ""))
+                for s in limit_s
+                if season_team.get(s, {}).get("team")
+            ],
             key=lambda x: int(x[0]),
         )
 
         if path:
+            for s, team_abbr, level_id in path:
+                meta = season_team.get(s, {})
+                node_metadata_by_key[(s, team_abbr, level_id)] = {
+                    "season": s,
+                    "season_label": _season_label(s),
+                    "team": team_abbr,
+                    "level_id": level_id,
+                    "level_name": meta.get("level_name", ""),
+                    "team_id": meta.get("team_id", ""),
+                }
             pid = p.get("PersonID", link_id)
             player_data[pid] = {
                 "name": f"{p.get('LastName', '')} {p.get('FirstName', '')}".strip(),
@@ -378,20 +399,21 @@ def build_career_paths_sankey(
         )
 
     # ── Build nodes ──
-    node_set: set[tuple[str, str]] = set()
+    node_set: set[tuple[str, str, str]] = set()
     for pd in player_data.values():
-        for (s, t) in pd["path"]:
-            node_set.add((s, t))
+        for (s, t, level_id) in pd["path"]:
+            node_set.add((s, t, level_id))
 
     all_seasons_sorted = sorted(
-        {s for s, _ in node_set},
+        {s for s, _, _ in node_set},
         key=lambda s: int(s) if s.isdigit() else 0,
     )
 
-    # Sort nodes by (season, team)
-    sorted_nodes = sorted(node_set, key=lambda x: (int(x[0]) if x[0].isdigit() else 0, x[1]))
-    node_labels = [f"{_season_label(s)} · {t}" for s, t in sorted_nodes]
-    node_to_idx = {(s, t): i for i, (s, t) in enumerate(sorted_nodes)}
+    # Sort nodes by (season, team, level)
+    sorted_nodes = sorted(node_set, key=lambda x: (int(x[0]) if x[0].isdigit() else 0, x[1], x[2]))
+    node_labels = [f"{_season_label(s)} · {t}" for s, t, _ in sorted_nodes]
+    node_to_idx = {(s, t, level_id): i for i, (s, t, level_id) in enumerate(sorted_nodes)}
+    node_meta = [node_metadata_by_key.get(key, {}) for key in sorted_nodes]
 
     # ── X positions: one column per season ──
     n_seasons = len(all_seasons_sorted)
@@ -405,7 +427,7 @@ def build_career_paths_sankey(
 
     # ── Y positions: distribute nodes within each season column ──
     season_nodes: dict[str, list[int]] = defaultdict(list)
-    for i, (s, t) in enumerate(sorted_nodes):
+    for i, (s, t, level_id) in enumerate(sorted_nodes):
         season_nodes[s].append(i)
 
     node_x: list[float] = [0.0] * len(sorted_nodes)
@@ -424,16 +446,16 @@ def build_career_paths_sankey(
     for pd in player_data.values():
         path = pd["path"]
         for i in range(len(path) - 1):
-            s0, t0 = path[i]
-            s1, t1 = path[i + 1]
+            s0, t0, level0 = path[i]
+            s1, t1, level1 = path[i + 1]
             # Only link if seasons are consecutive (gap ≤ 1 year)
             try:
                 if int(s1) - int(s0) > 2:
                     continue
             except ValueError:
                 continue
-            src_idx = node_to_idx.get((s0, t0))
-            tgt_idx = node_to_idx.get((s1, t1))
+            src_idx = node_to_idx.get((s0, t0, level0))
+            tgt_idx = node_to_idx.get((s1, t1, level1))
             if src_idx is not None and tgt_idx is not None and src_idx != tgt_idx:
                 edge_data[(src_idx, tgt_idx)].append(pd["name"])
 
@@ -449,5 +471,5 @@ def build_career_paths_sankey(
         nodes=node_labels, links=links, player_flows=[],
         focal_team=focal_team, mode=f"career_{direction}",
         confirmed_count=confirmed, total_searched=len(players),
-        node_x=node_x, node_y=node_y,
+        node_x=node_x, node_y=node_y, node_meta=node_meta,
     )

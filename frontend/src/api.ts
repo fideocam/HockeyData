@@ -55,7 +55,17 @@ export interface SankeyResponse {
   searched_count: number;
   node_x: number[];
   node_y: number[];
+  node_meta?: SankeyNodeMeta[];
   flows: PlayerFlow[];
+}
+
+export interface SankeyNodeMeta {
+  season?: string;
+  season_label?: string;
+  team?: string;
+  level_id?: string;
+  level_name?: string;
+  team_id?: string;
 }
 
 export interface RetentionOrg {
@@ -100,7 +110,8 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  levels: () => get<Level[]>("/api/levels"),
+  levels: (season?: string) =>
+    get<Level[]>(`/api/levels${season ? `?season=${encodeURIComponent(season)}` : ""}`),
 
   searchTeams: (q: string) =>
     get<TeamResult[]>(`/api/search-teams?q=${encodeURIComponent(q)}`),

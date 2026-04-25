@@ -4,7 +4,7 @@ import type { Level, TeamResult } from "./api";
 import { teamMatchesSelectedLevel } from "./teamLevelFilter";
 
 /** Abbreviation plus optional joukkuekortti TeamID when the user picks a search row (enables full roster). */
-export type TeamSearchPick = { abbr: string; joukkueTeamId?: string };
+export type TeamSearchPick = { abbr: string; joukkueTeamId?: string; teamName?: string };
 
 interface Props {
   value: string;
@@ -12,7 +12,7 @@ interface Props {
   selectedTeamId?: string;
   onChange: (pick: TeamSearchPick) => void;
   disabled?: boolean;
-  /** When set (and not "all levels"), search results are restricted to teams that fit this level. */
+  /** When set, search results that fit this level are ranked first. */
   level: Level | null;
 }
 
@@ -73,13 +73,21 @@ export default function TeamSearch({ value, selectedTeamId, onChange, disabled, 
     api.searchTeams(debouncedQuery)
       .then((res) => {
         if (cancelled) return;
-        const levelFiltered = res.filter((t) => teamMatchesSelectedLevel(t.TeamName, level));
-        // Sort by score, then deduplicate by (org, age-group) — keeps one entry
-        // per age group per organisation so youth teams stay visible.
-        const tagged = levelFiltered
+        // Level names and team categories change over time. Keep all teams visible,
+        // but rank rows that look like the selected level first.
+        const tagged = res
           .filter((t) => t.AssociationAbbrv)
-          .map((t) => ({ t, ...categorise(t) }))
-          .sort((a, b) => a.score - b.score);
+          .map((t) => ({
+            t,
+            matchesSelectedLevel: teamMatchesSelectedLevel(t.TeamName, level),
+            ...categorise(t),
+          }))
+          .sort((a, b) => {
+            if (a.matchesSelectedLevel !== b.matchesSelectedLevel) {
+              return a.matchesSelectedLevel ? -1 : 1;
+            }
+            return a.score - b.score;
+          });
 
         const seen = new Set<string>();
         const unique: TeamResult[] = [];
@@ -89,7 +97,7 @@ export default function TeamSearch({ value, selectedTeamId, onChange, disabled, 
             unique.push(t);
           }
         }
-        setResults(unique.slice(0, 28));
+        setResults(unique.slice(0, 36));
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -107,7 +115,7 @@ export default function TeamSearch({ value, selectedTeamId, onChange, disabled, 
 
   const select = useCallback((t: TeamResult) => {
     setQuery(t.AssociationAbbrv);
-    onChange({ abbr: t.AssociationAbbrv, joukkueTeamId: t.TeamID });
+    onChange({ abbr: t.AssociationAbbrv, joukkueTeamId: t.TeamID, teamName: t.TeamName });
     setOpen(false);
     setResults([]);
   }, [onChange]);
@@ -128,7 +136,7 @@ export default function TeamSearch({ value, selectedTeamId, onChange, disabled, 
           enterKeyHint="search"
           placeholder={
             level && level.id !== "0"
-              ? "Team name or abbreviation (matches selected level)…"
+              ? "Team name or abbreviation (best level matches first)…"
               : "Type team name or abbreviation…"
           }
           value={query}

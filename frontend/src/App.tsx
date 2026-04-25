@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "./api";
-import type { Level, SankeyResponse } from "./api";
+import type { Level, SankeyNodeMeta, SankeyResponse } from "./api";
 import SankeyChart from "./SankeyChart";
 import TeamSearch from "./TeamSearch";
 import LevelPicker from "./LevelPicker";
@@ -11,6 +11,7 @@ type AppTab = "flows" | "retention";
 
 type Mode = "to_current" | "from_previous" | "career_to_current" | "career_from_previous";
 type Weight = "players" | "games";
+type GraphTraversalPick = { label: string; team: string; season: string; levelId: string; levelName?: string };
 
 const SEASONS = Array.from({ length: 21 }, (_, i) => {
   const end = 2026 - i;
@@ -27,6 +28,27 @@ function extractTeamIdFromPaste(raw: string): string | null {
   if (m) return m[1];
   if (/^\d{4,24}$/.test(t)) return t;
   return null;
+}
+
+function parseCareerNodeLabel(label: string): GraphTraversalPick | null {
+  const parts = label.split(" · ");
+  if (parts.length < 2) return null;
+
+  const seasonLabel = parts[0].trim();
+  const teamName = parts.slice(1).join(" · ").trim();
+  const match = seasonLabel.match(/^(\d{4})[-–](\d{2}|\d{4})$/);
+  if (!match || !teamName) return null;
+
+  const startYear = match[1];
+  const endPart = match[2];
+  const endYear = endPart.length === 2 ? `${startYear.slice(0, 2)}${endPart}` : endPart;
+  return { label, team: teamName, season: endYear, levelId: "0" };
+}
+
+function modeForOlderSeason(currentMode: Mode): Mode {
+  if (currentMode === "to_current") return "from_previous";
+  if (currentMode === "career_to_current") return "career_from_previous";
+  return currentMode;
 }
 
 const MODE_OPTIONS: { value: Mode; label: string; description: string }[] = [
@@ -97,6 +119,7 @@ export default function App() {
   const [season, setSeason] = useState("2026");
   const [levelId, setLevelId] = useState("64");
   const [team, setTeam] = useState("");
+  const [selectedTeamName, setSelectedTeamName] = useState("");
   /** Joukkuekortti TeamID from search row pick — loads official roster instead of player search. */
   const [joukkueTeamIdFromPick, setJoukkueTeamIdFromPick] = useState("");
   const [teamIdOrUrl, setTeamIdOrUrl] = useState("");
@@ -104,8 +127,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<SankeyResponse | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const [traversalPick, setTraversalPick] = useState<GraphTraversalPick | null>(null);
 
-  useEffect(() => { api.levels().then(setLevels).catch(() => {}); }, []);
+  useEffect(() => {
+    api.levels(season).then(setLevels).catch(() => {});
+  }, [season]);
 
   const parsedTeamId = extractTeamIdFromPaste(teamIdOrUrl);
   /** Lookup enabled for parsed id or any paste that still contains teamid= (server parses the rest). */
@@ -124,6 +150,7 @@ export default function App() {
     try {
       const m = await api.teamFromId(id ?? raw);
       if (m.teamAbbrv) setTeam(m.teamAbbrv);
+      if (m.teamName) setSelectedTeamName(m.teamName);
       if (m.levelId) setLevelId(m.levelId);
       if (m.teamid) setJoukkueTeamIdFromPick(m.teamid);
     } catch (e: unknown) {
@@ -152,8 +179,10 @@ export default function App() {
       setResult(data);
       setResultKey((k) => k + 1);
       setShowTable(false);
+      setTraversalPick(null);
       if (data.resolved_level_id) setLevelId(data.resolved_level_id);
       setTeam(data.focal_team);
+      setSelectedTeamName(data.focal_team_display ?? "");
       if (data.resolved_team_id) setJoukkueTeamIdFromPick(data.resolved_team_id);
     } catch (e: any) {
       setError(e.message ?? "Unknown error");
@@ -161,6 +190,33 @@ export default function App() {
       setLoading(false);
     }
   }, [team, teamIdOrUrl, joukkueTeamIdFromPick, season, levelId, mode, weight, canSubmit]);
+
+  const selectGraphNode = useCallback((label: string, meta?: SankeyNodeMeta) => {
+    const fallback = parseCareerNodeLabel(label);
+    const teamFromMeta = meta?.team?.trim();
+    const seasonFromMeta = meta?.season?.trim();
+    const pick = teamFromMeta && seasonFromMeta
+      ? {
+          label,
+          team: teamFromMeta,
+          season: seasonFromMeta,
+          levelId: meta?.level_id?.trim() || "0",
+          levelName: meta?.level_name?.trim() || undefined,
+        }
+      : fallback;
+    if (!pick) return;
+    setTeam(pick.team);
+    setSeason(pick.season);
+    setLevelId(pick.levelId);
+    setMode("career_from_previous");
+    setJoukkueTeamIdFromPick("");
+    setTeamIdOrUrl("");
+    setSelectedTeamName(
+      pick.levelName ? `${pick.team} (${pick.levelName}) from ${label}` : `${pick.team} from ${label}`
+    );
+    setTraversalPick(pick);
+    setError(null);
+  }, []);
 
   const currentLevel = levels.find((l) => l.id === levelId);
   const seasonLabel = SEASONS.find((s) => s.value === season)?.label ?? season;
@@ -237,7 +293,19 @@ export default function App() {
           <div className="filter-row">
             <div className="filter-group">
               <label className="filter-label" htmlFor="season-select">Season</label>
-              <select id="season-select" value={season} onChange={(e) => setSeason(e.target.value)}>
+              <select
+                id="season-select"
+                value={season}
+                onChange={(e) => {
+                  const nextSeason = e.target.value;
+                  setSeason(nextSeason);
+                  if (Number(nextSeason) < Number(SEASONS[0].value)) {
+                    setMode((m) => modeForOlderSeason(m));
+                  }
+                  setResult(null);
+                  setTraversalPick(null);
+                }}
+              >
                 {SEASONS.map((s) => (
                   <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
@@ -260,20 +328,29 @@ export default function App() {
                 <span className="filter-label-hint">
                   {levelId === "0"
                     ? " — one suggestion per age group; pick a row for full roster"
-                    : " — suggestions match the level; pick a row for full roster"}
+                    : " — best level matches first; older/renamed teams still show"}
                 </span>
               </label>
               <TeamSearch
                 value={team}
                 selectedTeamId={joukkueTeamIdFromPick}
-                onChange={({ abbr, joukkueTeamId }) => {
+                onChange={({ abbr, joukkueTeamId, teamName }) => {
                   setTeam(abbr);
                   setJoukkueTeamIdFromPick(joukkueTeamId ?? "");
+                  setSelectedTeamName(teamName ?? "");
                   setTeamIdOrUrl("");
+                  setTraversalPick(null);
                 }}
                 disabled={loading}
                 level={selectedLevel}
               />
+              {selectedTeamName && (
+                <div className="selected-team-card">
+                  <span className="selected-team-label">Selected team</span>
+                  <span className="selected-team-name">{selectedTeamName}</span>
+                  {team && <span className="selected-team-abbr">{team}</span>}
+                </div>
+              )}
             </div>
 
             <div className="filter-group filter-group--teamid">
@@ -398,7 +475,25 @@ export default function App() {
             </div>
 
             <div className="chart-card">
-              <SankeyChart key={resultKey} data={result} weight={isSimple ? weight : "players"} />
+              {traversalPick && (
+                <div className="traversal-card">
+                  <div>
+                    <span className="traversal-label">Selected from graph</span>
+                    <strong>{traversalPick.team}</strong>
+                    <span>{SEASONS.find((s) => s.value === traversalPick.season)?.label ?? traversalPick.season}</span>
+                    {traversalPick.levelName && <span>{traversalPick.levelName}</span>}
+                  </div>
+                  <button className="btn-primary" onClick={submit} disabled={!canSubmit}>
+                    {loading ? <><span className="btn-spinner" /> Building…</> : "Build graph from this node"}
+                  </button>
+                </div>
+              )}
+              <SankeyChart
+                key={resultKey}
+                data={result}
+                weight={isSimple ? weight : "players"}
+                onNodePick={selectGraphNode}
+              />
             </div>
 
             {isSimple && showTable && (

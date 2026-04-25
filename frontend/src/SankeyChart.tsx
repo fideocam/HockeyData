@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SankeyResponse } from "./api";
+import type { SankeyNodeMeta, SankeyResponse } from "./api";
 import type { Data, Layout } from "plotly.js";
 
 type PlotlyStatic = typeof import("plotly.js");
@@ -12,6 +12,7 @@ import("plotly.js-dist-min").then((m) => {
 interface Props {
   data: SankeyResponse;
   weight?: "players" | "games";
+  onNodePick?: (label: string, meta?: SankeyNodeMeta) => void;
 }
 
 const ACCENT = "#1a5fa8";
@@ -36,7 +37,7 @@ function rgba(hex: string, a: number) {
 
 const isCareerMode = (mode: string) => mode.startsWith("career_");
 
-export default function SankeyChart({ data, weight = "players" }: Props) {
+export default function SankeyChart({ data, weight = "players", onNodePick }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(!!Plotly);
@@ -118,13 +119,30 @@ export default function SankeyChart({ data, weight = "players" }: Props) {
 
     // Always purge first so switching teams never carries over stale node positions
     Plotly!.purge(plotRef.current);
+    const plotEl = plotRef.current as any;
+    const handlePlotClick = (event: any) => {
+      const point = event?.points?.[0];
+      const label = typeof point?.label === "string" ? point.label : "";
+      if (label && nodes.includes(label)) {
+        const nodeIndex = typeof point?.pointNumber === "number"
+          ? point.pointNumber
+          : nodes.indexOf(label);
+        onNodePick?.(label, data.node_meta?.[nodeIndex]);
+      }
+    };
+
     Plotly!.newPlot(plotRef.current, [trace], layout, {
       displayModeBar: false,
       responsive: false,
+    }).then(() => {
+      if (onNodePick) plotEl.on("plotly_click", handlePlotClick);
     });
 
-    return () => { if (plotRef.current && Plotly) Plotly!.purge(plotRef.current); };
-  }, [data, plotSize, ready, weight]);
+    return () => {
+      if (plotEl?.removeListener) plotEl.removeListener("plotly_click", handlePlotClick);
+      if (plotRef.current && Plotly) Plotly!.purge(plotRef.current);
+    };
+  }, [data, onNodePick, plotSize, ready, weight]);
 
   const downloadImage = useCallback(async (format: ExportFormat) => {
     if (!plotRef.current || !Plotly) return;
@@ -153,7 +171,7 @@ export default function SankeyChart({ data, weight = "players" }: Props) {
   return (
     <div className="sankey-chart-shell">
       <div className="sankey-chart-toolbar">
-        <span className="sankey-chart-note">Square image export</span>
+        <span className="sankey-chart-note">Click a career node to explore from that team and year</span>
         <div className="sankey-chart-actions">
           <button className="btn-ghost" onClick={() => downloadImage("svg")} disabled={!!exporting}>
             {exporting === "svg" ? "Preparing…" : "Download SVG"}
