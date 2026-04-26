@@ -106,6 +106,55 @@ export interface RetentionResponse {
   orgs: RetentionOrg[];
 }
 
+export interface PlayerNetworkGame {
+  date: string;
+  game_id: string;
+  home: string;
+  away: string;
+  relation: string;
+}
+
+export interface PlayerNetworkRow {
+  person_id: string;
+  link_id: string;
+  name: string;
+  score: number;
+  level_id: string;
+  level_name: string;
+  ranking_reasons: string[];
+  best_season: string;
+  best_teams: string[];
+  encounter_games: number;
+  encounter_teams: string[];
+  encounter_seasons: string[];
+  sample_games: PlayerNetworkGame[];
+}
+
+export interface PlayerNetworkResponse {
+  player: {
+    name: string;
+    person_id: string;
+    link_id: string;
+    association: string;
+  };
+  candidates: Array<{
+    PersonID: string;
+    LinkID: string;
+    LastName: string;
+    FirstName: string;
+    Association: string;
+  }>;
+  summary: {
+    seasons: string[];
+    scanned_games: number;
+    scanned_team_seasons: number;
+    missing_game_rosters: number;
+    method: string;
+  };
+  best_with: PlayerNetworkRow[];
+  best_against: PlayerNetworkRow[];
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
   if (!res.ok) {
@@ -121,6 +170,11 @@ export const api = {
 
   searchTeams: (q: string) =>
     get<TeamResult[]>(`/api/search-teams?q=${encodeURIComponent(q)}`),
+
+  playerNetwork: (q: string, seasonsBack = 20, maxGames = 250) =>
+    get<PlayerNetworkResponse>(
+      `/api/player-network?q=${encodeURIComponent(q)}&seasons_back=${seasonsBack}&max_games=${maxGames}`
+    ),
 
   teamFromId: (teamid: string) =>
     get<TeamFromIdResponse>(`/api/team-from-id?teamid=${encodeURIComponent(teamid.trim())}`),

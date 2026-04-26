@@ -48,10 +48,13 @@ from sankey_builder import (  # noqa: E402
     build_from_previous_sankey,
     build_to_current_sankey,
 )
+from team_colors import hex_to_rgba, team_color  # noqa: E402
 
 DEFAULT_OUT = ROOT / "exports" / "sankey_2025_26"
 INITIALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ"
-PRACTICE_AND_MISC_LEVELS = {"0", "123", "127", "128", "130", "131", "132", "133", "134", "135", "139", "153"}
+# Keep camp/misc levels out, but include national-team levels:
+# 127 men, 128 U20, 130 U18, 131 U17, 132 U16, 133 women, 134 women U18.
+PRACTICE_AND_MISC_LEVELS = {"0", "123", "135", "139", "153"}
 DEFAULT_TEAM_URL_TEMPLATE = "https://www.leijonat.fi/joukkueet?teamid={teamid}"
 
 
@@ -144,8 +147,9 @@ async def node_urls_for(
     fallback_team_abbr: str,
     url_template: str,
     cache: dict[tuple[str, str], str],
+    concurrency: int = 8,
 ) -> list[str]:
-    urls: list[str] = []
+    specs: list[tuple[str, str, str]] = []
     meta_by_index = data.node_meta if len(data.node_meta) == len(data.nodes) else []
     for i, label in enumerate(data.nodes):
         team_abbr = fallback_team_abbr if label == data.focal_team else ""
@@ -153,10 +157,20 @@ async def node_urls_for(
         if meta_by_index:
             team_abbr = str(meta_by_index[i].get("team", "") or team_abbr)
             level_id = str(meta_by_index[i].get("level_id", "") or "")
+        specs.append((label, team_abbr, level_id))
 
-        team_id = ""
-        if team_abbr and level_id:
-            team_id = await resolve_team_card_id(client, team_abbr, level_id, cache)
+    unique_keys = sorted({(team_abbr, level_id) for _, team_abbr, level_id in specs if team_abbr and level_id})
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def resolve_key(team_abbr: str, level_id: str) -> None:
+        async with sem:
+            await resolve_team_card_id(client, team_abbr, level_id, cache)
+
+    await asyncio.gather(*(resolve_key(team_abbr, level_id) for team_abbr, level_id in unique_keys))
+
+    urls: list[str] = []
+    for label, team_abbr, level_id in specs:
+        team_id = cache.get((team_abbr, level_id), "") if team_abbr and level_id else ""
         if not team_id and (label == data.focal_team or label.endswith(f"· {data.focal_team}")):
             team_id = fallback_team_id
         urls.append(team_url(team_id, url_template))
@@ -206,6 +220,7 @@ async def roster_context(
     team_id: str,
     season: str,
     max_players: int,
+    career_concurrency: int,
 ) -> tuple[list[dict], dict[str, dict], str, str, str]:
     meta = await get_team_main_data(client, team_id)
     if not meta:
@@ -236,7 +251,7 @@ async def roster_context(
     if not players:
         raise RuntimeError("roster has no player ids")
 
-    careers = await careers_for_players(client, players)
+    careers = await careers_for_players(client, players, concurrency=career_concurrency)
     return players, careers, team_abbr, team_name, level_id
 
 
@@ -284,18 +299,27 @@ def inject_node_links(svg: str, node_urls: list[str]) -> str:
     return "".join(parts)
 
 
-def render_svg(
+def build_sankey_figure(
     data: SankeyData,
     title: str,
     subtitle: str,
-    size: int = 1200,
-    node_urls: list[str] | None = None,
-) -> str:
+    width: int,
+    height: int,
+) -> go.Figure:
     career = data.mode.startswith("career_")
+
+    def team_part(label: str) -> str:
+        return label.split(" · ", 1)[1] if career and " · " in label else label
+
     node_colors = []
     for label in data.nodes:
-        team_part = label.split(" · ", 1)[1] if career and " · " in label else label
-        node_colors.append("#1a5fa8" if team_part == data.focal_team else "#4a90d9")
+        node_colors.append(team_color(team_part(label)))
+
+    link_colors = []
+    for link in data.links:
+        source_idx = int(link["source"])
+        source_team = team_part(data.nodes[source_idx]) if 0 <= source_idx < len(data.nodes) else ""
+        link_colors.append(hex_to_rgba(team_color(source_team), 0.42))
 
     node: dict = {
         "pad": 12 if career else 18,
@@ -317,7 +341,7 @@ def render_svg(
             "target": [l["target"] for l in data.links],
             "value": [l["value"] for l in data.links],
             "label": [l.get("label", "") for l in data.links],
-            "color": ["rgba(74,144,217,0.38)" for _ in data.links],
+            "color": link_colors,
         },
     )])
     fig.update_layout(
@@ -326,11 +350,37 @@ def render_svg(
         paper_bgcolor="white",
         plot_bgcolor="white",
         margin={"l": 16, "r": 16, "t": 72, "b": 16},
-        width=size,
-        height=size,
+        width=width,
+        height=height,
     )
-    svg = fig.to_image(format="svg", width=size, height=size).decode("utf-8")
+    return fig
+
+
+def render_svg(
+    data: SankeyData,
+    title: str,
+    subtitle: str,
+    size: int = 1200,
+    node_urls: list[str] | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> str:
+    image_width = width or size
+    image_height = height or size
+    fig = build_sankey_figure(data, title, subtitle, image_width, image_height)
+    svg = fig.to_image(format="svg", width=image_width, height=image_height).decode("utf-8")
     return inject_node_links(svg, node_urls or [])
+
+
+def render_png(
+    data: SankeyData,
+    title: str,
+    subtitle: str,
+    width: int = 1920,
+    height: int = 1080,
+) -> bytes:
+    fig = build_sankey_figure(data, title, subtitle, width, height)
+    return fig.to_image(format="png", width=width, height=height)
 
 
 def output_file_for(args: argparse.Namespace, team_id: str, team_name: str, level_id: str) -> Path:
@@ -363,7 +413,7 @@ async def export_all(args: argparse.Namespace) -> None:
 
     async with httpx.AsyncClient() as client:
         rows = await discover_teams(client, args.team_query)
-        print(f"Discovered {len(rows)} candidate teams")
+        print(f"Discovered {len(rows)} candidate teams", flush=True)
 
         exported = 0
         skipped = 0
@@ -377,9 +427,19 @@ async def export_all(args: argparse.Namespace) -> None:
                 if not meta or not should_export(meta, args):
                     skipped += 1
                     continue
+                level_id = str(meta.get("LevelID") or "0")
+                team_name_for_path = str(meta.get("TeamName") or team_id).strip()
+                out_file = output_file_for(args, team_id, team_name_for_path, level_id)
+                if args.skip_existing and out_file.exists():
+                    exported += 1
+                    print(f"[{exported}] exists {out_file.relative_to(args.output)}", flush=True)
+                    if args.limit and exported >= args.limit:
+                        break
+                    continue
+                print(f"Exporting {meta.get('TeamName') or team_id}...", flush=True)
 
                 players, careers, team_abbr, team_name, level_id = await roster_context(
-                    client, team_id, args.season, args.max_players
+                    client, team_id, args.season, args.max_players, args.career_concurrency
                 )
                 sankey = build_sankey(args.mode, players, careers, team_abbr, args.season, level_id)
                 node_urls = await node_urls_for(
@@ -389,6 +449,7 @@ async def export_all(args: argparse.Namespace) -> None:
                     fallback_team_abbr=team_abbr,
                     url_template=args.team_url_template,
                     cache=team_card_id_cache,
+                    concurrency=args.link_concurrency,
                 )
                 title = f"{team_name} ({season_label(args.season)})"
                 subtitle = f"{level_name(level_id)} · {sankey.confirmed_count} players · {args.mode}"
@@ -397,14 +458,14 @@ async def export_all(args: argparse.Namespace) -> None:
                 out_file.parent.mkdir(parents=True, exist_ok=True)
                 out_file.write_text(svg, encoding="utf-8")
                 exported += 1
-                print(f"[{exported}] {team_name} -> {out_file.relative_to(args.output)}")
+                print(f"[{exported}] {team_name} -> {out_file.relative_to(args.output)}", flush=True)
                 if args.limit and exported >= args.limit:
                     break
             except Exception as exc:
                 skipped += 1
-                print(f"skip {team_id}: {exc}")
+                print(f"skip {team_id}: {exc}", flush=True)
 
-    print(f"Done. Exported {exported} SVG files to {args.output}. Skipped {skipped}.")
+    print(f"Done. Exported {exported} SVG files to {args.output}. Skipped {skipped}.", flush=True)
 
 
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
@@ -418,6 +479,9 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Stop after N exported teams")
     parser.add_argument("--max-players", type=int, default=300, help="Max roster players per team")
     parser.add_argument("--size", type=int, default=1200, help="Square SVG size in pixels")
+    parser.add_argument("--career-concurrency", type=int, default=24, help="Concurrent player career lookups per team")
+    parser.add_argument("--link-concurrency", type=int, default=8, help="Concurrent team-card link lookups")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip SVGs that already exist")
     parser.add_argument(
         "--team-url-template",
         default=DEFAULT_TEAM_URL_TEMPLATE,

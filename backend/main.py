@@ -13,7 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from leijonat_client import (
     extract_team_id,
+    get_game_rosters,
     get_player_career,
+    get_player_all_stats,
     get_player_season_stats,
     get_team_main_data,
     get_team_season_roster,
@@ -202,6 +204,148 @@ def get_client() -> httpx.AsyncClient:
     return _client
 
 
+LEVEL_STRENGTH = {
+    "127": 1000,  # National Team men
+    "64": 950,   # Liiga
+    "133": 940,  # National Team women
+    "73": 900,   # Auroraliiga
+    "65": 850,   # Mestis
+    "128": 835,  # U20 national
+    "130": 820,  # U18 national
+    "131": 805,  # U17 national
+    "132": 790,  # U16 national
+    "134": 780,  # Women U18 national
+    "66": 740,
+    "77": 720,
+    "81": 700,
+    "88": 680,
+    "74": 660,
+    "78": 640,
+    "82": 620,
+    "89": 600,
+    "67": 560,
+    "79": 540,
+    "83": 520,
+    "90": 500,
+    "75": 480,
+    "68": 440,
+    "84": 430,
+    "152": 420,
+    "154": 420,
+    "69": 380,
+    "70": 340,
+    "71": 240,
+    "72": 220,
+}
+
+
+def _level_name(level_id: str, fallback: str = "") -> str:
+    for level in LEVELS:
+        if str(level["id"]) == str(level_id):
+            return str(level["name"])
+    return fallback or f"Level {level_id}"
+
+
+def _entry_strength(entry: dict) -> tuple[int, list[str]]:
+    lid = str(entry.get("LevelID") or "")
+    score = LEVEL_STRENGTH.get(lid)
+    reasons = []
+    if score is None:
+        try:
+            web_order = int(entry.get("LevelWebOrder", "999") or "999")
+        except ValueError:
+            web_order = 999
+        score = max(80, 700 - web_order * 3)
+    if lid in {"127", "128", "130", "131", "132", "133", "134"}:
+        reasons.append("national team level")
+    reasons.append(_level_name(lid, str(entry.get("LevelName") or "")))
+    return score, reasons
+
+
+def _best_career_level_for_season(career: dict, season: str) -> dict:
+    best = {
+        "score": 0,
+        "level_id": "",
+        "level_name": "",
+        "teams": [],
+        "reasons": [],
+    }
+    entries = career.get("Skater", []) + career.get("Goalkeeper", [])
+    for entry in entries:
+        if str(entry.get("SeasonNumber") or "") != str(season):
+            continue
+        score, reasons = _entry_strength(entry)
+        if score > best["score"]:
+            teams = []
+            for team in entry.get("LevelTeams", []) or []:
+                abbr = team.get("TeamAbbrv") or team.get("AssAbbrv") or ""
+                if abbr:
+                    teams.append(abbr)
+            best = {
+                "score": score,
+                "level_id": str(entry.get("LevelID") or ""),
+                "level_name": _level_name(str(entry.get("LevelID") or ""), str(entry.get("LevelName") or "")),
+                "teams": teams,
+                "reasons": reasons,
+            }
+    return best
+
+
+def _best_career_level(career: dict) -> dict:
+    best = {
+        "score": 0,
+        "level_id": "",
+        "level_name": "",
+        "teams": [],
+        "reasons": [],
+        "season": "",
+    }
+    entries = career.get("Skater", []) + career.get("Goalkeeper", [])
+    for entry in entries:
+        score, reasons = _entry_strength(entry)
+        if score > best["score"]:
+            teams = []
+            for team in entry.get("LevelTeams", []) or []:
+                abbr = team.get("TeamAbbrv") or team.get("AssAbbrv") or ""
+                if abbr:
+                    teams.append(abbr)
+            best = {
+                "score": score,
+                "level_id": str(entry.get("LevelID") or ""),
+                "level_name": _level_name(str(entry.get("LevelID") or ""), str(entry.get("LevelName") or "")),
+                "teams": teams,
+                "reasons": reasons,
+                "season": str(entry.get("SeasonNumber") or ""),
+            }
+    return best
+
+
+def _player_name(row: dict) -> str:
+    return f"{row.get('LastName', '')} {row.get('FirstName', '')}".strip()
+
+
+def _person_id(row: dict) -> str:
+    return str(row.get("PersonID") or row.get("PlayerID") or "").split("&", 1)[0].strip()
+
+
+def _link_id(row: dict) -> str:
+    return str(row.get("LinkID") or row.get("PersonID") or "").split("&", 1)[0].strip()
+
+
+def _season_team_ids(stats: dict) -> list[str]:
+    out = []
+    for season_team in stats.get("SeasonTeams", []) or []:
+        teams = season_team.get("Teams") or {}
+        ids = teams.get("TeamID") or []
+        if isinstance(ids, str):
+            ids = [ids]
+        for tid in ids:
+            tid_s = str(tid or "").strip()
+            if tid_s and tid_s not in out:
+                out.append(tid_s)
+    return out
+
+
 @app.get("/api/levels")
 async def api_levels(season: str = Query("", description="Season end year, e.g. 2025")):
     return _levels_for_season(season)
@@ -210,6 +354,181 @@ async def api_levels(season: str = Query("", description="Season end year, e.g. 
 @app.get("/api/search-teams")
 async def api_search_teams(q: str = Query(..., min_length=1)):
     return await search_teams(get_client(), q)
+
+
+@app.get("/api/search-players")
+async def api_search_players(q: str = Query(..., min_length=1), level: str = Query("0")):
+    return await search_players(get_client(), player_name=q, level=level)
+
+
+@app.get("/api/player-network")
+async def api_player_network(
+    q: str = Query(..., min_length=1, description="Player name search or exact LinkID"),
+    seasons_back: int = Query(20, ge=1, le=30),
+    max_games: int = Query(250, ge=1, le=1000),
+):
+    client = get_client()
+    query = q.strip()
+    search_rows = []
+    if query.isdigit() and len(query) > 12:
+        selected = {"LinkID": query, "PersonID": "", "LastName": "", "FirstName": query, "Association": ""}
+    else:
+        search_rows = await search_players(client, player_name=query)
+        if not search_rows:
+            raise HTTPException(404, "No player found")
+        selected = search_rows[0]
+
+    link_id = str(selected.get("LinkID") or "").strip()
+    if not link_id:
+        raise HTTPException(404, "Selected player has no LinkID")
+    selected_person_id = _person_id(selected)
+    selected_link_id = _link_id(selected)
+    selected_name = _player_name(selected) or link_id
+    career = await get_player_career(client, link_id)
+    entries = career.get("Skater", []) + career.get("Goalkeeper", [])
+    seasons = sorted(
+        {str(entry.get("SeasonNumber") or "") for entry in entries if str(entry.get("SeasonNumber") or "").isdigit()},
+        key=int,
+        reverse=True,
+    )[:seasons_back]
+
+    teammates: dict[str, dict] = {}
+    opponents: dict[str, dict] = {}
+    scanned_games = 0
+    scanned_team_seasons = 0
+    missing_game_rosters = 0
+    career_cache: dict[str, dict] = {}
+
+    async def add_encounter(bucket: dict, row: dict, season: str, relation: str, game: dict, team_abbr: str) -> None:
+        pid = _person_id(row)
+        row_link_id = _link_id(row)
+        if not pid or (selected_person_id and pid == selected_person_id) or (selected_link_id and row_link_id == selected_link_id):
+            return
+        item = bucket.setdefault(pid, {
+            "person_id": pid,
+            "link_id": str(row.get("LinkID") or ""),
+            "name": _player_name(row),
+            "teams": set(),
+            "games": 0,
+            "seasons": set(),
+            "best": {"score": 0, "level_id": "", "level_name": "", "teams": [], "reasons": [], "season": ""},
+            "sample_games": [],
+        })
+        item["teams"].add(team_abbr)
+        item["games"] += 1
+        item["seasons"].add(season)
+        if len(item["sample_games"]) < 5:
+            item["sample_games"].append({
+                "date": game.get("GameDate", ""),
+                "game_id": game.get("GameID", ""),
+                "home": game.get("HomeTeamAbbreviation", ""),
+                "away": game.get("AwayTeamAbbreviation", ""),
+                "relation": relation,
+            })
+
+    for season in seasons:
+        stats = await get_player_all_stats(client, link_id, season)
+        for team_id in _season_team_ids(stats):
+            if scanned_games >= max_games:
+                break
+            meta = await get_team_main_data(client, team_id)
+            if not meta:
+                continue
+            association_id = str(meta.get("AssociationID") or "")
+            season_payload = await client.post(
+                "https://www.leijonat.fi/modules/mod_teamcardseasonstats/helper/getteamseasondata3.php",
+                data={"teamid": team_id, "seasonnumber": season, "associationid": association_id},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=30,
+            )
+            season_payload.raise_for_status()
+            team_data = season_payload.json()
+            scanned_team_seasons += 1
+            for game in team_data.get("Games", []) or []:
+                if scanned_games >= max_games:
+                    break
+                game_id = str(game.get("GameID") or "")
+                if not game_id:
+                    continue
+                rosters = await get_game_rosters(client, game_id, season)
+                home = rosters.get("HomeTeamGameRoster", {}).get("Players", []) or []
+                away = rosters.get("AwayTeamGameRoster", {}).get("Players", []) or []
+                home_ids = {_person_id(player) for player in home}
+                away_ids = {_person_id(player) for player in away}
+                home_links = {_link_id(player) for player in home}
+                away_links = {_link_id(player) for player in away}
+                if not home_ids and not away_ids:
+                    missing_game_rosters += 1
+                    continue
+                selected_home = (selected_person_id and selected_person_id in home_ids) or (selected_link_id and selected_link_id in home_links)
+                selected_away = (selected_person_id and selected_person_id in away_ids) or (selected_link_id and selected_link_id in away_links)
+                if not selected_home and not selected_away:
+                    # Search result and game roster LinkIDs can differ, but PersonID is usually stable.
+                    continue
+                scanned_games += 1
+                own = home if selected_home else away
+                opp = away if selected_home else home
+                own_abbr = game.get("HomeTeamAbbreviation" if selected_home else "AwayTeamAbbreviation", "")
+                opp_abbr = game.get("AwayTeamAbbreviation" if selected_home else "HomeTeamAbbreviation", "")
+                for row in own:
+                    await add_encounter(teammates, row, season, "with", game, own_abbr)
+                for row in opp:
+                    await add_encounter(opponents, row, season, "against", game, opp_abbr)
+        if scanned_games >= max_games:
+            break
+
+    async def hydrate(bucket: dict) -> list[dict]:
+        sem = asyncio.Semaphore(16)
+
+        async def one(item: dict) -> None:
+            lid = item.get("link_id", "")
+            if not lid:
+                return
+            async with sem:
+                if lid not in career_cache:
+                    career_cache[lid] = await get_player_career(client, lid)
+            item["best"] = _best_career_level(career_cache.get(lid, {}))
+
+        await asyncio.gather(*(one(item) for item in bucket.values()))
+        rows = []
+        for item in bucket.values():
+            best = item["best"]
+            rows.append({
+                "person_id": item["person_id"],
+                "link_id": item["link_id"],
+                "name": item["name"],
+                "score": best["score"],
+                "level_id": best["level_id"],
+                "level_name": best["level_name"],
+                "ranking_reasons": best["reasons"],
+                "best_season": best.get("season", ""),
+                "best_teams": best["teams"],
+                "encounter_games": item["games"],
+                "encounter_teams": sorted(item["teams"]),
+                "encounter_seasons": sorted(item["seasons"]),
+                "sample_games": item["sample_games"],
+            })
+        return sorted(rows, key=lambda row: (row["score"], row["encounter_games"]), reverse=True)
+
+    with_rows, against_rows = await asyncio.gather(hydrate(teammates), hydrate(opponents))
+    return {
+        "player": {
+            "name": selected_name,
+            "person_id": selected_person_id,
+            "link_id": link_id,
+            "association": selected.get("Association", ""),
+        },
+        "candidates": search_rows[:10],
+        "summary": {
+            "seasons": seasons,
+            "scanned_games": scanned_games,
+            "scanned_team_seasons": scanned_team_seasons,
+            "missing_game_rosters": missing_game_rosters,
+            "method": "Scans actual game rosters for the searched player's games, then ranks every encountered player by their best season at their highest career league/national-team level.",
+        },
+        "best_with": with_rows[:25],
+        "best_against": against_rows[:25],
+    }
 
 
 @app.get("/api/team-from-id")

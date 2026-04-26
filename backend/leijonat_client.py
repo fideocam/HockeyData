@@ -140,6 +140,35 @@ async def get_player_season_stats(
     return {"skater_games": 0, "goalie_games": 0}
 
 
+async def get_player_all_stats(client: httpx.AsyncClient, link_id: str, season: str) -> dict:
+    """
+    Player season summary, including SeasonTeams with real joukkuekortti TeamID values.
+    """
+    result = await _post(
+        client,
+        f"/modules/mod_playercardallstats/helper/getplayerallstats5.php"
+        f"?lkq={link_id}&age=0&season={season}",
+        {},
+    )
+    return result if isinstance(result, dict) else {}
+
+
+async def get_game_rosters(client: httpx.AsyncClient, game_id: str, season: str) -> dict:
+    """
+    Tulospalvelu game roster payload for a GameID.
+    Contains HomeTeamGameRoster and AwayTeamGameRoster with player PersonID/LinkID.
+    """
+    resp = await client.post(
+        "https://tulospalvelu.leijonat.fi/game/helpers/getRosters.php",
+        data={"gameid": str(game_id), "season": str(season)},
+        headers=HEADERS,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = _safe_json(resp)
+    return data if isinstance(data, dict) else {}
+
+
 def _team_main_payload_ok(result: Any) -> bool:
     if not result or not isinstance(result, dict):
         return False

@@ -5,9 +5,10 @@ import SankeyChart from "./SankeyChart";
 import TeamSearch from "./TeamSearch";
 import LevelPicker from "./LevelPicker";
 import RetentionView from "./RetentionView";
+import PlayerNetworkView from "./PlayerNetworkView";
 import "./App.css";
 
-type AppTab = "flows" | "retention";
+type AppTab = "flows" | "retention" | "network";
 
 type Mode = "to_current" | "from_previous" | "career_to_current" | "career_from_previous";
 type Weight = "players" | "games";
@@ -273,10 +274,17 @@ export default function App() {
         >
           Youth retention
         </button>
+        <button
+          className={`app-tab ${tab === "network" ? "active" : ""}`}
+          onClick={() => setTab("network")}
+        >
+          Player network
+        </button>
       </div>
 
       <main className="main">
         {tab === "retention" && <RetentionView levels={levels} />}
+        {tab === "network" && <PlayerNetworkView />}
 
         {tab === "flows" && <>
         {/* ── Filter panel ── */}
